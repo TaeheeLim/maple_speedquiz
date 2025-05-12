@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>이미지 비교 데모</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      margin: 0;
+    }
+    #overlay {
+      position: absolute;
+      border: 2px dashed red;
+      display: none;
+      pointer-events: none;
+      z-index: 10;
+    }
+    video {
+      max-width: 100%;
+      height: auto;
+      border: 1px solid gray;
+      display: none;
+    }
+    .result-item {
+      margin: 8px;
+      text-align: center;
+    }
+    .result-item img {
+      width: 100px;
+      height: auto;
+      display: block;
+      border: 1px solid #aaa;
+      margin-bottom: 4px;
+    }
+    .result-item:hover img {
+      border-color: #007bff;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h2>화면 캡처 후 유사 이미지 찾기</h2>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start;">
+    <!-- 왼쪽: 영상 + 캡처 -->
+    <div id="videoContainer" style="flex: 2; position: relative;">
+      <video id="screenVideo" autoplay playsinline></video>
+      <div id="overlay"></div>
+      <br>
+      <button onclick="toggleScreenShare()">화면 공유 시작</button>
+      <button onclick="captureAndCompare()" disabled>캡처 및 비교</button>
+      <canvas id="captureCanvas" style="display:none;"></canvas>
+    </div>
+
+    <!-- 오른쪽: 결과 -->
+    <div id="result" style="flex: 1; display: flex; flex-wrap: wrap;"></div>
+  </div>
+
+  <script>
+    let stream = null;
+    let isSharing = false;
+    let startX, startY, endX, endY;
+    let selecting = false;
+
+    const overlay = document.getElementById("overlay");
+    const video = document.getElementById("screenVideo");
+
+    async function toggleScreenShare() {
+      const captureButton = document.querySelector('button[onclick="captureAndCompare()"]');
+      const toggleButton = document.querySelector('button[onclick="toggleScreenShare()"]');
+
+      if (!isSharing) {
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+          video.srcObject = stream;
+          video.style.display = 'block';
+          toggleButton.innerText = '화면 공유 중지';
+          captureButton.disabled = false;
+          isSharing = true;
+        } catch (err) {
+          console.error("화면 공유 실패:", err);
+        }
+      } else {
+        stream.getTracks().forEach(track => track.stop());
+        video.srcObject = null;
+        video.style.display = 'none';
+        toggleButton.innerText = '화면 공유 시작';
+        captureButton.disabled = true;
+        isSharing = false;
+      }
+    }
+
+    video.addEventListener('mousedown', function (e) {
+      if (!isSharing) return;
+      selecting = true;
+      const rect = video.getBoundingClientRect();
+      startX = e.clientX - rect.left;
+      startY = e.clientY - rect.top;
+
+      overlay.style.left = `${startX}px`;
+      overlay.style.top = `${startY}px`;
+      overlay.style.width = '0px';
+      overlay.style.height = '0px';
+      overlay.style.display = 'block';
+    });
+
+    video.addEventListener('mousemove', function (e) {
+      if (!selecting) return;
+      const rect = video.getBoundingClientRect();
+      const currentX = e.clientX - rect.left;
+      const currentY = e.clientY - rect.top;
+
+      const width = currentX - startX;
+      const height = currentY - startY;
+
+      overlay.style.width = `${Math.abs(width)}px`;
+      overlay.style.height = `${Math.abs(height)}px`;
+      overlay.style.left = `${width < 0 ? currentX : startX}px`;
+      overlay.style.top = `${height < 0 ? currentY : startY}px`;
+    });
+
+    video.addEventListener('mouseup', function (e) {
+      if (!selecting) return;
+      selecting = false;
+
+      const rect = video.getBoundingClientRect();
+      endX = e.clientX - rect.left;
+      endY = e.clientY - rect.top;
+
+      console.log(`선택영역: (${startX}, ${startY}) ~ (${endX}, ${endY})`);
+    });
+
+    async function captureAndCompare() {
+      const canvas = document.getElementById('captureCanvas');
+      const context = canvas.getContext('2d');
+
+      const scaleX = video.videoWidth / video.clientWidth;
+      const scaleY = video.videoHeight / video.clientHeight;
+
+      const sx = Math.min(startX, endX) * scaleX;
+      const sy = Math.min(startY, endY) * scaleY;
+      const sWidth = Math.abs(endX - startX) * scaleX;
+      const sHeight = Math.abs(endY - startY) * scaleY;
+
+      canvas.width = sWidth;
+      canvas.height = sHeight;
+
+      context.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
+      const base64Image = canvas.toDataURL("image/png");
+
+      const resultDiv = document.getElementById("result");
+      resultDiv.innerHTML = "결과 분석 중...";
+
+      const response = await fetch("/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: base64Image })
+      });
+
+      const result = await response.json();
+      resultDiv.innerHTML = "";
+
+      if (result.error || !result.results || result.results.length === 0) {
+        resultDiv.innerText = result.error || "유사한 이미지가 없습니다.";
+        return;
+      }
+
+      result.results.forEach(item => {
+        const container = document.createElement('div');
+        container.className = 'result-item';
+
+        const img = document.createElement('img');
+        img.src = item.image_url;
+        img.alt = item.filename;
+
+        const text = document.createElement('div');
+        text.innerText = `${item.filename}\n(${item.similarity})`;
+        text.style.fontSize = "12px";
+
+        container.appendChild(img);
+        container.appendChild(text);
+        resultDiv.appendChild(container);
+      });
+
+      overlay.style.display = 'none';
+    }
+  </script>
+</body>
+</html>
